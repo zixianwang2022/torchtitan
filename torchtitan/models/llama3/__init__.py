@@ -12,6 +12,7 @@ from torchtitan.components.validate import build_validator
 from torchtitan.distributed.pipeline_parallel import pipeline_llm
 from torchtitan.hf_datasets.text_datasets import build_text_dataloader
 from torchtitan.protocols.train_spec import TrainSpec
+from torchtitan.models.moe import MoEArgs
 
 from .infra.parallelize import parallelize_llama
 from .model.args import TransformerModelArgs
@@ -97,6 +98,26 @@ llama3_args = {
         multiple_of=4096,
         rope_theta=500000,
     ),
+    
+    # "10B_moe": TransformerModelArgs(
+    #     dim=4096,
+    #     n_layers=32,
+    #     n_heads=32,
+    #     n_kv_heads=8,        # <--- THIS enables GQA (32 query / 8 kv = group size 4)
+    #     vocab_size=102400,
+    #     multiple_of=1024,
+    #     norm_eps=1e-5,
+        
+    #     # ADD MOE HERE to turn Llama into MoE
+    #     moe_args=MoEArgs(
+    #         num_experts=64,
+    #         num_shared_experts=0, # Llama usually doesn't use shared experts
+    #         top_k=6,
+    #         expert_dim=1406,  # Standard MLP expansion
+    #     ),
+        
+    #     rope_theta=500000.0,
+    # ),
 }
 
 

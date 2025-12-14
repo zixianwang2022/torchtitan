@@ -45,7 +45,7 @@ _op_sac_save_list = {
     torch.ops.aten.max.default,
     torch._higher_order_ops.flex_attention,
     torch.ops.torch_attn._varlen_attn.default,
-    torch._higher_order_ops.inductor_compiled_code,
+    # torch._higher_order_ops.inductor_compiled_code,
 }
 
 

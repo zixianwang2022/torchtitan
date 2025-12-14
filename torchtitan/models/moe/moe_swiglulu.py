@@ -43,8 +43,9 @@ class FeedForward(nn.Module):
         hidden_dim (int): Hidden dimension of the feedforward layer.
 
     Attributes:
-        w1 (Linear): Linear transformation for the first layer (Up-projection).
-        w2 (Linear): Linear transformation for the second layer (Down-projection).
+        w1 (Linear): Linear transformation for the first layer.
+        w2 (Linear): Linear transformation for the second layer.
+        w3 (Linear): Linear transformation for the third layer.
     """
 
     def __init__(
@@ -55,14 +56,15 @@ class FeedForward(nn.Module):
         super().__init__()
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Standard MLP: w2(SiLU(w1(x)))
-        return self.w2(F.silu(self.w1(x)))
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
     def init_weights(self, init_std: float = 0.02):
         nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.w2.weight, mean=0.0, std=init_std)
+        for linear in (self.w2, self.w3):
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
 
 # NOTE: keeping this for-loop implementation for comparison
@@ -70,6 +72,7 @@ class FeedForward(nn.Module):
 def _run_experts_for_loop(
     w1: torch.Tensor,
     w2: torch.Tensor,
+    w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
@@ -88,8 +91,8 @@ def _run_experts_for_loop(
     )
     out_experts_splits = []
     for expert_idx, x_expert in enumerate(x):
-        # 2-layer MLP logic
         h = F.silu(torch.matmul(x_expert, w1[expert_idx].transpose(-2, -1)))
+        h = h * torch.matmul(x_expert, w3[expert_idx].transpose(-2, -1))
         h = torch.matmul(h, w2[expert_idx].transpose(-2, -1))
         # h shape (tokens_per_expert(varying), dim)
         out_experts_splits.append(h)
@@ -104,16 +107,18 @@ def _run_experts_for_loop(
 def _run_experts_grouped_mm(
     w1: torch.Tensor,
     w2: torch.Tensor,
+    w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
 
-    # 1. Up Projection + Activation
     h = F.silu(
         torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets)
     )
-    # 2. Down Projection
+    h = h * torch._grouped_mm(
+        x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets
+    )
     out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
 
     return out
@@ -131,6 +136,7 @@ class GroupedExperts(nn.Module):
         self.num_experts = num_experts
         self.w1 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
+        self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.use_grouped_mm = use_grouped_mm
 
     def forward(
@@ -143,9 +149,11 @@ class GroupedExperts(nn.Module):
             # dynamic-shape inputs in EP which cannot be easily expressed as DTensors.
             w1 = self.w1.to_local()
             w2 = self.w2.to_local()
+            w3 = self.w3.to_local()
         else:
             w1 = self.w1
             w2 = self.w2
+            w3 = self.w3
 
         if self.use_grouped_mm:
             # NOTE: If EP is not used, we need to pad the indices
@@ -158,13 +166,14 @@ class GroupedExperts(nn.Module):
                 run_experts_fn = indices_padding_wrapper(_run_experts_grouped_mm)
             else:
                 run_experts_fn = _run_experts_grouped_mm
-            return run_experts_fn(w1, w2, x, num_tokens_per_expert)
+            return run_experts_fn(w1, w2, w3, x, num_tokens_per_expert)
         else:
-            return _run_experts_for_loop(w1, w2, x, num_tokens_per_expert)
+            return _run_experts_for_loop(w1, w2, w3, x, num_tokens_per_expert)
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
+        nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
 
 
 class TokenChoiceTopKRouter(nn.Module):

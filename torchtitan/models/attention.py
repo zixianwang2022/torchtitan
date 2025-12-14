@@ -100,9 +100,11 @@ class FlexAttentionWrapper(torch.nn.Module):
         flex_attention,
         # This options also encapsulate max-autotune-no-cudagraphs.
         options={
-            "wrap_inductor_compiled_regions": True,
+            # "wrap_inductor_compiled_regions": True,
             "max_autotune": True,
             "coordinate_descent_tuning": True,
+            # "max_autotune": False,
+            # "coordinate_descent_tuning": False,
             "triton.cudagraphs": False,
         },
     )
