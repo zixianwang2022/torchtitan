@@ -48,3 +48,12 @@ Sessionx.vim
 
 *.o 
 *.e
+
+
+init.sh
+gen_scripts/*
+old_gen_scripts_old/*
+gen_configs/*
+gen_configs_0112_2026/*
+logs/*
+old_logs/
