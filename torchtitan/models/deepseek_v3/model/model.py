@@ -6,6 +6,7 @@
 
 import math
 
+import os 
 import torch
 from torch import nn
 
@@ -380,9 +381,33 @@ class TransformerBlock(nn.Module):
         Returns:
             torch.Tensor: Output tensor with the same shape as the input.
         """
+        rank=int (os.getenv ("RANK"))
+        
+        max_allocated_bytes = torch.cuda.max_memory_allocated()
+        # Get the maximum memory reserved in bytes
+        max_reserved_bytes = torch.cuda.max_memory_reserved()
+        # Convert bytes to Gigabytes (GB)
+        # 1 GB = 1024 * 1024 * 1024 bytes
+        max_allocated_gb = max_allocated_bytes / (1024**3)
+        max_reserved_gb = max_reserved_bytes / (1024**3)
+
+        if (rank % 4 == 0): 
+            print(f"[models/deepseek_v3/model/model.py] Before Attention {rank=} {self.layer_id=} {x.shape=}  Max memory reserved:  {max_reserved_gb:.1f} GB")
+        
+        
         x = x + self.attention(
             self.attention_norm(x), freqs_cis, attention_masks, positions
         )
+        
+        # max_allocated_bytes = torch.cuda.max_memory_allocated()
+        # # Get the maximum memory reserved in bytes
+        # max_reserved_bytes = torch.cuda.max_memory_reserved()
+        # # Convert bytes to Gigabytes (GB)
+        # # 1 GB = 1024 * 1024 * 1024 bytes
+        # max_allocated_gb = max_allocated_bytes / (1024**3)
+        # max_reserved_gb = max_reserved_bytes / (1024**3)
+        # print(f"[models/deepseek_v3/model/model.py] Before MoE {rank=}  Max memory reserved:  {max_reserved_gb:.4f} GB     Max memory allocated: {max_allocated_gb:.4f} GB")
+        
         if self.moe_enabled:
             x = x + self.moe(self.ffn_norm(x))
         else:

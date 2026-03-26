@@ -494,6 +494,10 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             if parallel_dims.cp_enabled
             else None
         )
+        
+        # print (f'[train.py] forward_backward_step {inputs=}')
+        print (f'[train.py] forward_backward_step {inputs.shape=}')
+        
 
         if parallel_dims.pp_enabled:
             # Pipeline Parallel forward / backward inside step() call

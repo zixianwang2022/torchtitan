@@ -437,16 +437,31 @@ class MetricsProcessor:
         self.logger.log(metrics, step)
 
         color = self.color
-        logger.info(
-            f"{color.red}step: {step:2}  "
-            f"{color.green}loss: {global_avg_loss:7.4f}  "
-            f"{color.orange}grad_norm: {grad_norm:7.4f}  "
-            f"{color.turquoise}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
-            f"({device_mem_stats.max_reserved_pct:.2f}%)  "
-            f"{color.blue}tps: {round(tps):,}  "
-            f"{color.cyan}tflops: {tflops:,.2f}  "
-            f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
-        )
+        rank = int (os.getenv ("RANK"))
+        world_size = int (os.getenv ("WORLD_SIZE"))
+        if rank == world_size - 1: 
+            logger.info(
+                f"{rank=}  "
+                f"step: {step:2}  "
+                f"loss: {global_avg_loss:7.4f}  "
+                f"grad_norm: {grad_norm:7.4f}  "
+                f"memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
+                f"({device_mem_stats.max_reserved_pct:.2f}%)  "
+                f"tps: {round(tps):,}  "
+                f"tflops: {tflops:,.2f}  "
+                f"mfu: {mfu:.2f}"
+            )
+        # logger.info(
+        #     f"{rank=}"
+        #     f"{color.red}step: {step:2}  "
+        #     f"{color.green}loss: {global_avg_loss:7.4f}  "
+        #     f"{color.orange}grad_norm: {grad_norm:7.4f}  "
+        #     f"{color.turquoise}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
+        #     f"({device_mem_stats.max_reserved_pct:.2f}%)  "
+        #     f"{color.blue}tps: {round(tps):,}  "
+        #     f"{color.cyan}tflops: {tflops:,.2f}  "
+        #     f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+        # )
 
         self.ntokens_since_last_log = 0
         self.data_loading_times.clear()

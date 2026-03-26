@@ -198,6 +198,9 @@ def build_pipeline_schedule(
             f"of stages ({num_total_stages}) which may result in a bubble in the pipeline."
         )
 
+    print (f'[distributed/pipeline_parallel.py] {microbatch_size=} {n_microbatches=} {batch_size=}')
+    logger.info (f'[distributed/pipeline_parallel.py] {microbatch_size=} {n_microbatches=} {batch_size=}')
+
     schedule = schedule_class(
         stages if looped_schedule else stages[0],
         n_microbatches=n_microbatches,

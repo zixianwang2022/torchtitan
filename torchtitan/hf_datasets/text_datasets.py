@@ -30,6 +30,10 @@ def _process_c4_text(sample: dict[str, Any]) -> str:
     """Process C4 dataset sample text."""
     return sample["text"]
 
+# It's helpful to have a generic processor for datasets with a "text" field
+def _process_generic_text(sample: dict[str, Any]) -> str:
+    """A generic processor that just extracts the 'text' field."""
+    return sample["text"]
 
 # Add your dataset here - more information at docs/datasets.md
 DATASETS = {
@@ -38,6 +42,15 @@ DATASETS = {
         loader=partial(_load_c4_dataset, split="train"),
         sample_processor=_process_c4_text,
     ),
+    
+    # --- ADD THIS ENTRY FOR YOUR LOCAL OSCAR DATASET ---
+    "oscar_local": DatasetConfig(
+        path="/lustre/orion/gen150/scratch/zixianw4/X-MoE/Megatron-DeepSpeed-X-MoE/examples_xmoe/data/oscar-1GB.jsonl",
+        loader=lambda path: load_dataset("json", data_files=path, split="train", streaming=True),
+        sample_processor=_process_generic_text,
+    ),
+    # --- END OF NEW ENTRY ---
+    
     "c4_test": DatasetConfig(
         path="tests/assets/c4_test",
         loader=lambda path: load_dataset(path, split="train"),

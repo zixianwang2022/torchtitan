@@ -1,0 +1,247 @@
+#!/bin/bash
+
+# --- 1. Templatized SLURM Header ---
+#SBATCH -A gen150
+#SBATCH -J {{JOB_NAME}}
+#SBATCH -o logs/job_%j_{{JOB_NAME}}/a-titan-%j.o
+#SBATCH -e logs/job_%j_{{JOB_NAME}}/a-titan-%j.e
+#SBATCH -t 00:15:00
+#SBATCH -p batch
+#SBATCH -N {{NODES}}
+#SBATCH -d singleton
+#SBATCH -q debug
+
+# --- 2. Templatized Variable Definitions ---
+JOB_NAME="{{JOB_NAME}}"
+NODES={{NODES}}
+GPUS_PER_NODE={{GPUS_PER_NODE}}
+PP_SIZE={{PP_SIZE}}
+EP_SIZE={{EP_SIZE}}
+MICRO_BATCH_SIZE={{MICRO_BATCH_SIZE}}
+NUM_MICRO_BATCHES={{NUM_BATCHES}}
+LOCAL_BATCH_SIZE={{LOCAL_BATCH_SIZE}}
+GLOBAL_BATCH_SIZE={{GLOBAL_BATCH_SIZE}}
+TRAIN_ITERS={{TRAIN_ITERS}}
+MODEL_SIZE="{{MODEL_SIZE}}"
+ACTIVATION_CHECKPOINT="{{AC_MODE}}"
+CONFIG_FILE="{{GENERATED_CONFIG_PATH}}"
+TOTAL_GPUS={{TOTAL_AVAIL_GPUS}}
+SEQ_LEN={{SEQ_LEN}}
+
+# --- 3. Directory Setup & Log Renaming ---
+JOB_DIR="logs/job_${SLURM_JOB_ID}_${JOB_NAME}"
+mkdir -p ${JOB_DIR}
+
+echo "------------------------------------------------------"
+echo "JOB CONFIGURATION:"
+echo "JOB_DIR: $JOB_DIR"
+echo "JOB_NAME: $JOB_NAME"
+echo "NODES: $NODES"
+echo "GPUS_PER_NODE: $GPUS_PER_NODE"
+echo "PP_SIZE: $PP_SIZE"
+echo "EP_SIZE: $EP_SIZE"
+echo "MICRO_BATCH_SIZE: $MICRO_BATCH_SIZE"
+echo "NUM_MICRO_BATCHES: $NUM_MICRO_BATCHES"
+echo "LOCAL_BATCH_SIZE (Calculated): $LOCAL_BATCH_SIZE"
+echo "TRAIN_ITERS: $TRAIN_ITERS"
+echo "MODEL_SIZE: $MODEL_SIZE"
+echo "ACTIVATION_CHECKPOINT: $ACTIVATION_CHECKPOINT"
+echo "CONFIG_FILE: $CONFIG_FILE"
+echo "SEQ_LEN: $SEQ_LEN"
+echo "------------------------------------------------------"
+
+# --- 4. Network Configuration (Frontier Communication Setup) ---
+export HIGH_SPEED_INTERFACE="hsn0"
+export FI_MR_CACHE_MONITOR=kdreg2         # Required to avoid a deadlock
+export FI_CXI_DEFAULT_CQ_SIZE=524288
+export FI_CXI_DEFAULT_TX_SIZE=16384
+export FI_CXI_RX_MATCH_MODE=hybrid
+
+export NCCL_SOCKET_IFNAME=hsn0
+export NCCL_NET_GDR_LEVEL=3
+export NCCL_CROSS_NIC=0
+
+# --- 5. Torch Settings ---
+export OMP_NUM_THREADS=4
+export TRITON_PTXAS_NUM_WORKERS=1
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export PYTHONFAULTHANDLER=1
+export CUDA_LAUNCH_BLOCKING=0
+
+export NCCL_TIMEOUT=480
+export NCCL_TIMEOUT_MS=480000
+export TORCH_NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1500
+
+# report of nccl hang and program does not exit 
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_ASYNC_ERROR_HANDLING=1
+
+# --- 6. Master Node Discovery ---
+export MASTER_PORT=29500
+readarray -t arr < <(scontrol show hostnames $SLURM_NODELIST)
+head_node=${arr[0]}
+
+export MASTER_ADDR=$(ssh $head_node "ip -4 addr show ${HIGH_SPEED_INTERFACE} | grep 'inet' | awk '{print \$2}' | cut -d/ -f1 | head -n1")
+
+if [[ -z "${MASTER_ADDR}" ]]; then
+    echo "FATAL: Could not determine MASTER_ADDR."
+    exit 1
+fi
+
+echo "--- Frontier Distributed Training Setup ---"
+echo "Head Node: $head_node"
+echo "MASTER_ADDR: $MASTER_ADDR (using interface: $NCCL_SOCKET_IFNAME)"
+echo "-----------------------------------------"
+
+# AWS/OFI
+# export LD_LIBRARY_PATH=/ccs/home/zixianw4/aws-ofi-nccl/lib:$LD_LIBRARY_PATH
+
+
+# --- 7. Proxy Settings ---
+export all_proxy=socks5://proxy.ccs.ornl.gov:3128/
+export ftp_proxy=ftp://proxy.ccs.ornl.gov:3128/
+export http_proxy=http://proxy.ccs.ornl.gov:3128/
+export https_proxy=http://proxy.ccs.ornl.gov:3128/
+export no_proxy="localhost,127.0.0.0/8,*.ccs.ornl.gov,*.ncrc.gov,.olcf.ornl.gov,*.frontier.olcf.ornl.gov,${head_node}"
+
+# --- 8. Hugging Face & Torch Settings ---
+export HF_HOME=/lustre/orion/gen150/scratch/zixianw4/huggingface_cache
+export HF_HUB_DOWNLOAD_TIMEOUT=600
+export HF_HTTP_TIMEOUT=600
+
+# Add Anti-Fragmentation flag to avoid OOM due to fragmentation 
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+# Torch Home mapping
+export MY_CACHE_DIR="/lustre/orion/gen150/scratch/zixianw4/torch_cache"
+mkdir -p $MY_CACHE_DIR
+export TORCH_HOME=$MY_CACHE_DIR
+
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+
+# --- 9. Exporting Triton Cache to Compute Nodes ---
+PERSISTENT_TRITON_CACHE="/lustre/orion/gen150/scratch/zixianw4/.triton/cache"
+TMP_TRITON_DIR="/tmp/triton_cache_${SLURM_JOB_ID}"
+export TRITON_CACHE_DIR="${TMP_TRITON_DIR}"
+
+TMP_INDUCTOR_DIR="/tmp/inductor_cache_${SLURM_JOB_ID}"
+export TORCHINDUCTOR_CACHE_DIR="${TMP_INDUCTOR_DIR}"
+
+echo "--- Warming Triton cache on all nodes at: $(date '+%F %T') ---"
+srun -N ${NODES} -n ${NODES} --ntasks-per-node=1 --export=ALL,FI_MR_CACHE_MONITOR,FI_CXI_DEFAULT_CQ_SIZE,FI_CXI_DEFAULT_TX_SIZE,FI_CXI_RX_MATCH_MODE,NCCL_DEBUG,PYTORCH_CUDA_ALLOC_CONF,TRITON_CACHE_DIR,TORCHINDUCTOR_CACHE_DIR,HF_DATASETS_CACHE,LD_LIBRARY_PATH \
+    bash cache_setup.sh ${PERSISTENT_TRITON_CACHE} ${TMP_TRITON_DIR}
+echo "--- Cache warm done at: $(date '+%F %T') ---"
+
+
+# --- 10. Srun Launcher ---
+echo "================================================="
+echo "Starting TorchTitan via srun at: $(date '+%F %T')"
+echo "================================================="
+
+export LAUNCHER="
+export RANK=\$SLURM_PROCID
+export LOCAL_RANK=\$SLURM_LOCALID
+export WORLD_SIZE=\$SLURM_NTASKS
+export MASTER_ADDR=$MASTER_ADDR
+export MASTER_PORT=$MASTER_PORT
+export TORCHINDUCTOR_AUTOTUNE_IN_SUBPROC=1
+
+exec python -m torchtitan.train --job.config_file ${CONFIG_FILE} \
+    > ${JOB_DIR}/rank_\$SLURM_PROCID.log
+"
+
+# Restored --export=ALL exactly to ensure your pre-loaded Conda env maps over perfectly
+srun -N $NODES -n $TOTAL_GPUS -c2 \
+     --ntasks-per-node=$GPUS_PER_NODE \
+     --gpus-per-node=$GPUS_PER_NODE \
+     --kill-on-bad-exit=1 \
+     --export=ALL,FI_MR_CACHE_MONITOR,FI_CXI_DEFAULT_CQ_SIZE,FI_CXI_DEFAULT_TX_SIZE,FI_CXI_RX_MATCH_MODE,NCCL_DEBUG,PYTORCH_CUDA_ALLOC_CONF,TRITON_CACHE_DIR,TORCHINDUCTOR_CACHE_DIR,HF_DATASETS_CACHE,LD_LIBRARY_PATH \
+     bash -c "$LAUNCHER"
+
+
+# --- 11. Post-Run Log Consolidation & Analysis ---
+echo "------------------------------------------------------"
+echo "--- Post-Run Log Collection & Analysis ---"
+echo "------------------------------------------------------"
+
+# 1. Define Model Dimensions based on MODEL_SIZE
+if [[ "$MODEL_SIZE" == "10B_titan" ]]; then
+    HIDDEN_DIM=2048; MOE_INTER_DIM=1408; NUM_LAYERS=28; NUM_EXPERTS=64; TOPK=6
+elif [[ "$MODEL_SIZE" == "63B_titan" ]]; then
+    HIDDEN_DIM=5120; MOE_INTER_DIM=1536; NUM_LAYERS=32; NUM_EXPERTS=128; TOPK=6
+elif [[ "$MODEL_SIZE" == "63B_titan_4L" ]]; then
+    HIDDEN_DIM=5120; MOE_INTER_DIM=1536; NUM_LAYERS=32; NUM_EXPERTS=128; TOPK=6
+elif [[ "$MODEL_SIZE" == "173B_titan" ]]; then
+    HIDDEN_DIM=7168; MOE_INTER_DIM=2048; NUM_LAYERS=24; NUM_EXPERTS=256; TOPK=8
+elif [[ "$MODEL_SIZE" == "537B_titan" ]]; then
+    HIDDEN_DIM=7168; MOE_INTER_DIM=2048; NUM_LAYERS=60; NUM_EXPERTS=256; TOPK=8
+elif [[ "$MODEL_SIZE" == "1T_titan" ]]; then
+    HIDDEN_DIM=7168; MOE_INTER_DIM=2048; NUM_LAYERS=60; NUM_EXPERTS=512; TOPK=8
+elif [[ "$MODEL_SIZE" == "16B" ]] || [[ "$MODEL_SIZE" == "16B_titan" ]]; then
+    HIDDEN_DIM=2048; MOE_INTER_DIM=1408; NUM_LAYERS=27; NUM_EXPERTS=64; TOPK=6
+else
+    echo "WARNING: Unknown model size $MODEL_SIZE, using 16B defaults"
+    HIDDEN_DIM=2048; MOE_INTER_DIM=1408; NUM_LAYERS=27; NUM_EXPERTS=64; TOPK=6
+fi
+
+# 2. Merge Logs
+LAST_RANK=$(( TOTAL_GPUS - 1 ))
+RANK_LOG_FILE="${JOB_DIR}/rank_${LAST_RANK}.log"
+RANK_LOG_FILE_2="${JOB_DIR}/rank_0.log"
+SLURM_LOG_FILE="${JOB_DIR}/a-titan-${SLURM_JOB_ID}.o"
+MERGED_LOG="${JOB_DIR}/full_run.log"
+
+# Wait a moment for file system sync
+sleep 5
+
+if [ -f "${SLURM_LOG_FILE}" ]; then
+    cat "${SLURM_LOG_FILE}" > "${MERGED_LOG}"
+else
+    echo "Warning: SLURM .o file not found at ${SLURM_LOG_FILE}" > "${MERGED_LOG}"
+fi
+
+echo -e "\n\n==========================================================\n" >> "${MERGED_LOG}"
+echo -e "--- RANK ${LAST_RANK} METRICS (LOSS/TFLOPS) BELOW ---\n" >> "${MERGED_LOG}"
+echo -e "==========================================================\n" >> "${MERGED_LOG}"
+
+if [ -f "${RANK_LOG_FILE_2}" ]; then
+    cat "${RANK_LOG_FILE_2}" >> "${MERGED_LOG}"
+else
+    echo "Error: Rank 0 log file not found at ${RANK_LOG_FILE_2}" >> "${MERGED_LOG}"
+fi
+
+if [ -f "${RANK_LOG_FILE}" ]; then
+    cat "${RANK_LOG_FILE}" >> "${MERGED_LOG}"
+else
+    echo "Error: Rank ${LAST_RANK} log file not found at ${RANK_LOG_FILE}" >> "${MERGED_LOG}"
+fi
+
+echo "Merged log saved to: ${MERGED_LOG}"
+
+# 3. Call the Python Analyzer
+python analyze_titan_log.py "${MERGED_LOG}" \
+    --slurm_job_id "$SLURM_JOB_ID" \
+    --model_size "$MODEL_SIZE" \
+    --moe_type "TorchTitan" \
+    --nodes $NODES \
+    --gpus_per_node $GPUS_PER_NODE \
+    --pp $PP_SIZE \
+    --ep $EP_SIZE \
+    --dp $(( TOTAL_GPUS / PP_SIZE / EP_SIZE )) \
+    --tp 1 \
+    --gbs $GLOBAL_BATCH_SIZE \
+    --mbs $MICRO_BATCH_SIZE \
+    --iterations $TRAIN_ITERS \
+    --seqlen $SEQ_LEN \
+    --num_layers $NUM_LAYERS \
+    --hidden_dim $HIDDEN_DIM \
+    --num_experts $NUM_EXPERTS \
+    --expert_dim $MOE_INTER_DIM \
+    --topk $TOPK \
+    --activation_checkpointing "$ACTIVATION_CHECKPOINT" \
+    --pp_schedule "{{PP_SCHEDULE}}" >> "${MERGED_LOG}"
+
+echo "Analysis Complete. Full log: ${MERGED_LOG}"

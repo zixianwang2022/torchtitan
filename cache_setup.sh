@@ -1,0 +1,19 @@
+#!/bin/bash
+PERSISTENT_CACHE=$1
+TMP_TRITON_DIR=$2
+
+echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+echo "NCCL_NET: $NCCL_NET"
+echo "FI_MR_CACHE_MONITOR: $FI_MR_CACHE_MONITOR"
+echo "TRITON_CACHE_DIR: $TRITON_CACHE_DIR"
+echo "TORCHINDUCTOR_CACHE_DIR: $TORCHINDUCTOR_CACHE_DIR"
+# echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+# echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+# echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+# echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+# echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+
+mkdir -p ${TMP_TRITON_DIR}
+echo "[cache_setup] $(hostname): copying 1.8G  cache to /tmp..."
+cp -r ${PERSISTENT_CACHE}/. ${TMP_TRITON_DIR}/
+echo "[cache_setup] $(hostname): done at $(date '+%F %T')"

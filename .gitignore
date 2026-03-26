@@ -57,3 +57,4 @@ gen_configs/*
 gen_configs_0112_2026/*
 logs/*
 old_logs/
+old_gen_configs_old/*
